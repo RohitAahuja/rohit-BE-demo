@@ -1,18 +1,19 @@
 const express = require("express");
-const { body } = require("express-validator");
+
 const { customerValidator, emailAlreadyPresentValidator } = require("../utility/validator");
 const customerController = require("../controllers/customer");
+const isAuth = require('../middleware/is-auth');
 
 const router = express.Router();
 
-router.get("", customerController.getCustomers);
+router.get("", isAuth, customerController.getCustomers);
 
-router.post("", customerValidator(), emailAlreadyPresentValidator(), customerController.saveCustomer);
+router.post("", isAuth, customerValidator(), emailAlreadyPresentValidator(), customerController.createCustomer);
 
-router.get("/:customerId", customerController.getCustomers);
+router.get("/:customerId", isAuth, customerController.getCustomers);
 
-router.put("/:customerId", customerValidator(), customerController.saveCustomer);
+router.put("/:customerId", isAuth, customerValidator(), customerController.updateCustomer);
 
-router.delete("/:customerId", customerController.deleteCustomer);
+router.delete("/:customerId", isAuth, customerController.deleteCustomer);
 
 module.exports = router;

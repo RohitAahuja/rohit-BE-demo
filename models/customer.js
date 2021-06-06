@@ -34,9 +34,14 @@ const customerSchema = new Schema(
     },
     photo: {
       type: String,
-    //   required: true,
+      required: true,
     },
     hobbies: [String],
+    creator: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    }
   },
   { timestamps: true }
 );

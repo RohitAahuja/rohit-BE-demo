@@ -1,19 +1,39 @@
-const { validationResult } = require("express-validator");
+const path = require("path");
+const fs = require("fs");
 const mongoose = require("mongoose");
-const customer = require("../models/customer");
 
 const Customer = require("../models/customer");
-const { asyncError } = require("../utility/errors");
+const User = require("../models/user");
+const { asyncError, syncError } = require("../utility/errors");
+const { DEFAULTPAGENUMBER, MAXITEMSPERPAGE } = require("../constants/constant");
+
+const clearImage = (filePath) => {
+  filePath = path.join(__dirname, "..", filePath);
+  fs.unlink(filePath, (err) => console.log(err));
+};
 
 exports.getCustomers = (req, res, next) => {
-  return Customer.find()
+  const { currentPage } = req.query.page || DEFAULTPAGENUMBER;
+  let totalItems;
+  Customer.find()
+    .countDocuments()
+    .then((count) => {
+      totalItems = count;
+      return Customer.find()
+        .skip((currentPage - 1) * MAXITEMSPERPAGE)
+        .limit(MAXITEMSPERPAGE);
+    })
     .then((customers) => {
       if (!customers) {
         customers = [];
       }
-      return res
-        .status(200)
-        .json({ message: "Customers Fetched successfully!!!", customers });
+      return res.status(200).json({
+        message: "Customers List Fetched successfully!!!",
+        customers,
+        totalItems,
+        currentPage,
+        itemsPerPage: MAXITEMSPERPAGE,
+      });
     })
     .catch((err) => asyncError(err, next));
 };
@@ -21,6 +41,7 @@ exports.getCustomers = (req, res, next) => {
 exports.getCustomerById = (req, res, next) => {
   const { customerId } = req.params;
   if (customerId) {
+    let loadedCustomer;
     return Customer.findById(customerId)
       .then((customer) => {
         if (!customer) {
@@ -28,9 +49,26 @@ exports.getCustomerById = (req, res, next) => {
             message: "Details of selected customer id is not present!!!",
           });
         }
-        return res
-          .status(200)
-          .json({ message: "Customer Fetched successfully!!!", customer });
+        loadedCustomer = customer;
+        return User.findById(req.userId)
+          .populate({
+            path: "customers",
+            match: { _id: mongoose.Types.ObjectId(customerId) },
+          })
+          .exec();
+      })
+      .then((usr) => {
+        if (!usr) {
+          asyncError(
+            "You are not allow to edit this customer record!!!",
+            next,
+            401
+          );
+        }
+        return res.status(200).json({
+          message: "Customer Fetched successfully!!!",
+          loadedCustomer,
+        });
       })
       .catch((err) => asyncError(err, next));
   } else {
@@ -38,40 +76,70 @@ exports.getCustomerById = (req, res, next) => {
   }
 };
 
-exports.saveCustomer = (req, res, next) => {
+exports.createCustomer = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
-    return res.status(422).json({
-      message: "Some input fields validation error arises!",
-      errors: errors.array(),
-    });
+    syncError(errors.errors[0].msg, 422);
+  }
+  const photo = req.body.photo;
+  if (req.file) {
+    photo = req.file.path;
+  }
+  if (!photo) {
+    syncError("No Photo Attached!!!", 422);
+  }
+  const customer = new Customer({ ...req.body, photo, create });
+  customer
+    .save()
+    .then(() => User.findById(req.userId))
+    .then((usr) => usr.customers.push(customer))
+    .then(() => {
+      return res
+        .status(201)
+        .json({ message: "Customer crated Successfully!!!", customer });
+    })
+    .catch((err) => asyncError(err, next));
+};
+
+exports.updateCustomer = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    syncError(errors.errors[0].msg, 422);
+  }
+
+  const photo = req.body.photo;
+  if (req.file) {
+    photo = req.file.path;
+  }
+  if (!photo) {
+    syncError("No Photo Attached!!!", 422);
   }
   const { customerId } = req.params;
-  const customer = new Customer({ ...req.body });
-  let ops = customerId
-    ? Customer.find({ _id: mongoose.Types.ObjectId(customerId) })
-        .then((cstmr) => {
-          if (!cstmr) {
-            return res
-              .status(404)
-              .json({ message: "Customer record is not present!!!" });
-          }
-          return customer.save();
-        })
-        .catch((err) => console.log(err))
-    : customer.save();
-  return ops
-    .then((cstmr) => {
-      if (!cstmr) {
-        return res
-          .status(500)
-          .json("Something went wrong, please try again!!!");
+  if (!customerId) {
+    syncError("Please provide a valid customerId!!!!", 400);
+  }
+
+  Customer.findById(customerId)
+    .then((customer) => {
+      if (!customer) {
+        asyncError("Selected customer record is not present!!!", next, 404);
+      }
+      if (customer.creator.toString() !== req.userId) {
+        asyncError("Not Authenticate User!!!", next, 403);
+      }
+      if (customer.photo !== photo) {
+        clearImage(photo);
+      }
+      customer = { ...customer, ...req.body };
+      return customer.save();
+    })
+    .then((rslt) => {
+      if (!rslt) {
+        asyncError("Something went wrong, please try again!!!", next, 500);
       }
       return res.status(201).json({
-        message: `Customer ${
-          customerId ? "updated" : "created"
-        } successfully!!!`,
-        customer: cstmr,
+        message: `Customer updated successfully!!!`,
+        customer,
       });
     })
     .catch((err) => asyncError(err, next));
@@ -79,24 +147,30 @@ exports.saveCustomer = (req, res, next) => {
 
 exports.deleteCustomer = (req, res, next) => {
   const { customerId } = req.params;
-  if (customerId) {
-    return Customer.findOne({
-      _id: mongoose.Types.ObjectId(customerId),
-    })
-      .then((cstmr) => {
-        if (!cstmr) {
-          return res
-            .status(404)
-            .json({ message: "Customer record is not present!!!" });
-        }
-        return Customer.deleteOne({_id: mongoose.Types.ObjectId(customerId)}).then((rslt) => {
-          return res.status(200).json({
-            message: "Customer data deleted successfully!!!",
-          })
-        })
-      })
-      .catch((err) => asyncError(err, next));
-  } else {
-    throw new Error("Please send a correct customerId!!!");
+  if (!customerId) {
+    syncError("Please provide a valid customerId!!!!", 400);
   }
+
+  Customer.findById(customerId)
+    .then((customer) => {
+      if (!customer) {
+        asyncError("Selected customer record not present!!!", next, 404);
+      }
+      if (customer.creator.toString() !== req.userId) {
+        asyncError("Not Authenticated User!!!", next, 403);
+      }
+      clearImage(customer.photo);
+      return Customer.findByIdAndRemove(customerId);
+    })
+    .then(() => User.findById(req.userId))
+    .then((user) => {
+      user.customers.pull(customerId);
+      return user.save();
+    })
+    .then((rslt) => {
+      return res
+        .json(200)
+        .json({ message: "Customer deleted successfully!!!" });
+    })
+    .catch((err) => asyncError(err, next, 500));
 };
